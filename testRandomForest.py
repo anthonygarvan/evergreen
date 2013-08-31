@@ -1,5 +1,6 @@
 __author__ = 'root'
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor
 from pandas import *
 import numpy as np
 from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix, roc_curve, auc
@@ -15,22 +16,20 @@ class Evergreen:
 
         self.trainPath = 'train.tsv'
         self.testPath = 'test.tsv'
-        self.submissionPath = 'submission_02.csv'
+        self.submissionPath = 'submission_03.csv'
         self.estimators = 100
-        self.testSize = 0.25
+        self.testSize = 0
+        self.debugMode = True
 
         self.distinctCategories = self.getDistinct(self.trainPath, True, 'alchemy_category')
-        #self.distinctIsNews = self.getDistinct(self.trainPath, True, 'is_news')
+        self.distinctIsNews = self.getDistinct(self.trainPath, True, 'is_news')
 
-        rf = self.trainAndTest()
-        self.generateSubmission(rf)
+        self.trainAndTest()
+
         print 'Done'
 
     def printMetrics(self, y_test, y_predicted):
-        print classification_report(y_test, y_predicted)
-        print roc_auc_score(y_test, y_predicted)
-        print confusion_matrix(y_test, y_predicted)
-
+        print "AUC Score: %f" % roc_auc_score(y_test, y_predicted)
 
     # Load training file
     def getData(self, path):
@@ -51,14 +50,18 @@ class Evergreen:
                 if s == 'alchemy_category':
                     categories = raw[s]
 
-            print '%s : %s' % (s, raw[s].dtype)
+            #print '%s : %s' % (s, raw[s].dtype)
 
         X = self.addDistinctColumns(self.distinctCategories, X, raw['alchemy_category'])
+        X = self.addDistinctColumns(self.distinctIsNews, X, raw['is_news'])
         X = np.array(X).transpose()
         y = np.array(y)
-        #n = 5
+
+        n = 5
         #print 'X:'
         #print X[n]
+        #print 'X shape:'
+        #print X.shape
         #print "Raw:"
         #print raw.irow(n)
         #print raw['alchemy_category_score']
@@ -74,6 +77,11 @@ class Evergreen:
                 else:
                     newCol.append(0)
             X.append(newCol)
+
+        newCol = []
+        for row in distinctSeries:
+            newCol.append(distinct[row])
+        X.append(newCol)
         return X
 
     def getDistinct(self, path, makeNew, columnName):
@@ -83,9 +91,11 @@ class Evergreen:
             raw = read_csv(path, sep='\t',na_values=['?']).fillna(-5)
             categories = raw[columnName]
             distinct = {}
+            distinctNum = 0
             for category in categories:
                 if category not in distinct:
-                    distinct[category] = True
+                    distinct[category] = distinctNum
+                    distinctNum += 1
 
             f = open(distinctPath, 'w')
             pickle.dump(distinct, f)
@@ -109,28 +119,16 @@ class Evergreen:
 
     def trainAndTest(self):
         X, y, urlid = self.getData(self.trainPath)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=self.testSize)
 
         # Random Forest
-        rf = RandomForestClassifier(n_estimators=self.estimators, criterion='gini')
-        rf.fit(X_train,y_train)
-        y_predicted = rf.predict(X_test)
-        self.printMetrics(y_test, y_predicted)
-
-        """
-        # Perception
-        per = Perceptron()
-        per.fit(X_train, y_train)
-        y_predicted = per.predict(X_test)
-        printMetrics(y_test, y_predicted)
-
-        # Support Vector Classifier
-        svc = LinearSVC()
-        svc.fit(X_train, y_train)
-        y_predicted = svc.predict(X_test)
-        printMetrics(y_test, y_predicted)
-        """
-        return rf
+        rf = RandomForestRegressor(n_estimators=self.estimators)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=self.testSize)
+        rf.fit(X_train, y_train)
+        if self.testSize == 0:
+            self.generateSubmission(rf)
+        else:
+            y_predicted = rf.predict(X_test)
+            self.printMetrics(y_test, y_predicted)
 
 
 e = Evergreen()
