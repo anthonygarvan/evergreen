@@ -8,7 +8,10 @@ from sklearn.cross_validation import train_test_split
 from pandas.io.parsers import read_csv
 from sklearn.linear_model.perceptron import Perceptron
 from sklearn.svm import LinearSVC
-import pickle
+import cPickle as pickle
+import nltk
+from TopicModel import TopicModel
+from time import time
 
 
 class Evergreen:
@@ -16,56 +19,65 @@ class Evergreen:
 
         self.trainPath = 'train.tsv'
         self.testPath = 'test.tsv'
-        self.submissionPath = 'submission_03.csv'
+        self.submissionPath = 'submission_05.csv'
         self.estimators = 100
-        self.testSize = 0
-        self.debugMode = True
+        self.testSize = .25
 
         self.distinctCategories = self.getDistinct(self.trainPath, True, 'alchemy_category')
         self.distinctIsNews = self.getDistinct(self.trainPath, True, 'is_news')
 
-        self.trainAndTest()
+        #self.trainAndTest()
+        #self.TopicModel = TopicModel(getTitle=True, getBody=True)
 
         print 'Done'
 
     def printMetrics(self, y_test, y_predicted):
-        print "AUC Score: %f" % roc_auc_score(y_test, y_predicted)
+        print "Final AUC Score: %f" % roc_auc_score(y_test, y_predicted)
 
-    # Load training file
-    def getData(self, path):
+    def getRaw(self, path):
         raw = read_csv(path, sep='\t', na_values=['?']).fillna(-5)
+        return raw
+
+    def trainChildren(self, df):
+        print 'training child models...'
+        self.topicModelBoth = TopicModel(getTitle=True, getBody=True)
+        self.topicModelBoth.trainFromDataFrame(df)
+
+        self.topicModelBody = TopicModel(getTitle=False, getBody=True)
+        self.topicModelBody.trainFromDataFrame(df)
+
+        self.topicModelTitle = TopicModel(getTitle=True, getBody=False)
+        self.topicModelTitle.trainFromDataFrame(df)
+
+    def preprocess(self, df):
+        print 'extracting features...'
         X = []
         y = []
 
-        for s in raw:
+        for s in df:
             if s == 'label':
-                y = np.array(raw[s].tolist())
+                y = np.array(df[s].tolist())
             else:
                 if s == 'urlid':
-                    urlid = raw[s].tolist()
-                if raw[s].dtype == 'float64':
-                    X.append(raw[s].tolist())
-                if raw[s].dtype == 'int64':
-                    X.append(raw[s].tolist())
+                    urlid = df[s].tolist()
+                if df[s].dtype == 'float64':
+                    X.append(df[s].tolist())
+                if df[s].dtype == 'int64':
+                    X.append(df[s].tolist())
                 if s == 'alchemy_category':
-                    categories = raw[s]
+                    categories = df[s]
 
             #print '%s : %s' % (s, raw[s].dtype)
 
-        X = self.addDistinctColumns(self.distinctCategories, X, raw['alchemy_category'])
-        X = self.addDistinctColumns(self.distinctIsNews, X, raw['is_news'])
+        X = self.addDistinctColumns(self.distinctCategories, X, df['alchemy_category'])
+        X = self.addDistinctColumns(self.distinctIsNews, X, df['is_news'])
+        X = self.topicModelBoth.addTopicModel(X, df['boilerplate'])
+        X = self.topicModelTitle.addTopicModel(X, df['boilerplate'])
+        X = self.topicModelBody.addTopicModel(X, df['boilerplate'])
+
         X = np.array(X).transpose()
         y = np.array(y)
 
-        n = 5
-        #print 'X:'
-        #print X[n]
-        #print 'X shape:'
-        #print X.shape
-        #print "Raw:"
-        #print raw.irow(n)
-        #print raw['alchemy_category_score']
-        #print raw['is_news']
         return X, y, urlid
 
     def addDistinctColumns(self, distinct, X, distinctSeries):
@@ -104,31 +116,56 @@ class Evergreen:
             distinct = pickle.load(f)
         return distinct
 
-    def generateSubmission(self, model):
-        X , y, urlid = self.getData(self.testPath)
-        y_predicted = model.predict(X)
+    def generateSubmission(self):
+        print 'starting submission'
+        raw = self.getRaw(self.testPath)
+
+        self.trainChildren(raw)
+        X, y, urlid = self.preprocess(raw)
+        self.train(X, y)
+
+        print 'generating prediction'
+        X_test, y_test, urlid = self.preprocess(raw)
+        y_predicted = self.rf.predict(X_test)
+        self.printMetrics(y_test, y_predicted)
 
         data = []
-
         for x in xrange(0, len(urlid)):
             data.append([urlid[x], y_predicted[x]])
 
         submission = DataFrame(data=data, columns = ['urlid', 'label'])
         submission.to_csv(self.submissionPath, index=False)
+        print 'submission writted to %s' % self.submissionPath
+
+    def train(self, X, y):
+        print 'training random forest...'
+        self.rf = RandomForestRegressor(n_estimators=self.estimators)
+        self.rf.fit(X, y)
+
+    def benchmark(self):
+        print 'starting benchmark'
+        raw = self.getRaw(self.trainPath)
+
+        rawRecords = raw.to_records()
+        dfr_train, dfr_test = train_test_split(rawRecords, test_size=self.testSize)
+        df_train = DataFrame().from_records(dfr_train)
+        df_test = DataFrame().from_records(dfr_test)
+
+        self.trainChildren(df_train)
+        X_train, y_train, urlid = self.preprocess(df_train)
+        self.train(X_train, y_train)
+
+        print 'generating prediction'
+        X_test, y_test, urlid = self.preprocess(df_test)
+        y_predicted = self.rf.predict(X_test)
+        self.printMetrics(y_test, y_predicted)
 
 
-    def trainAndTest(self):
-        X, y, urlid = self.getData(self.trainPath)
 
-        # Random Forest
-        rf = RandomForestRegressor(n_estimators=self.estimators)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=self.testSize)
-        rf.fit(X_train, y_train)
-        if self.testSize == 0:
-            self.generateSubmission(rf)
-        else:
-            y_predicted = rf.predict(X_test)
-            self.printMetrics(y_test, y_predicted)
-
-
+start = time()
 e = Evergreen()
+e.benchmark()
+finish = time()
+elapsed = finish-start
+print 'elapsed time: %f seconds' % elapsed
+
