@@ -25,6 +25,8 @@ from sklearn.feature_selection import SelectKBest, chi2, f_regression
 from sklearn.base import BaseEstimator
 from numpy import linspace, logspace
 from sklearn.cross_validation import cross_val_score
+from pandas import DataFrame
+from sklearn.decomposition import TruncatedSVD
 
 class TopicModel(BaseEstimator):
     def __init__(self, C=.5, numFeatures=5000, n_estimators=50, gamma=1):
@@ -32,7 +34,8 @@ class TopicModel(BaseEstimator):
         self.numFeatures = numFeatures
         self.n_estimators = n_estimators
         self.gamma = gamma
-        self.alpha=0.05
+        #self.alpha=0.05
+        self.alpha = 0.05
 
     def fit(self,X, y):
         self.clf = LogisticRegression(penalty='l2', dual=True, tol=0.0001,
@@ -120,6 +123,68 @@ class TopicModelHarness:
 
         return preprocessed_docs
 
+    def expandVocab(self, docs):
+        print 'expanding vocabulary...'
+        freqCounts = self.countTokens(docs)
+
+        tokenList = []
+        freqCountList = []
+        for token in freqCounts:
+            tokenList.append(token)
+            freqCountList.append(freqCounts[token])
+
+        expTokenDf = DataFrame({'tokens': tokenList, 'freqCounts': freqCountList})
+        expTokenDf = expTokenDf.sort('freqCounts', ascending=False)
+        expandableTokensFiltered = set(expTokenDf['tokens'][2000:3000]).difference(ENGLISH_STOP_WORDS)
+        batchSize = 10000
+        print "%d filtered tokens chosen" % len(expandableTokensFiltered)
+        print "Expandable tokens: "
+        print expandableTokensFiltered
+        newDocs = []
+        for i in xrange(0,len(docs)):
+            doc = docs[i]
+            newDocSplit = doc.split()
+            tokenList = doc.split(' ')
+            start = 0
+            newTokens = set()
+            while start < len(tokenList):
+                stop = start + batchSize
+                tokens = set(tokenList[start:stop])
+                start = start + batchSize/2
+                tokensToExpand = tokens.intersection(expandableTokensFiltered)
+                newTokens = newTokens.union(self.expandVocabFromSet(tokensToExpand))
+
+            newDocSplit.extend(list(newTokens))
+            newDoc = ''
+            for token in newDocSplit:
+                newDoc += ' ' + token + ' '
+            newDocs.append(newDoc)
+
+            if i % 500 == 0:
+                print '\nprocessed %d docs' % i
+                print '%d new tokens added to document' % len(newTokens)
+                print 'new tokens:'
+                print newTokens
+                print len(tokens)
+
+        return newDocs
+
+    def expandVocabFromSet(self, tokensToExpand):
+        expanded = set()
+        for token1 in tokensToExpand:
+            for token2 in tokensToExpand:
+                if token1 != token2:
+                    hash = self.getTwoTokenHash(token1, token2)
+                    if hash not in expanded:
+                        expanded.add(hash)
+        return expanded
+
+    def getTwoTokenHash(self, token1, token2):
+        l = [token1, token2]
+        l.sort()
+        hash = l[0] + '___' + l[1]
+        return hash
+
     def replaceRareWords(self, docs, rareWords):
         processed_docs = []
         for doc in docs:
@@ -172,10 +237,8 @@ class TopicModelHarness:
             return '__ISDIGIT__'
         return '__RARE__'
 
-    def countTokens(self, docs, y):
+    def countTokens(self, docs):
         freqCounts = {}
-        freqCountsWithClass = {}
-        freqsByClass = {}
         #for doc in docs, yi in y:
         for i in xrange(0,len(docs)):
             doc = docs[i]
@@ -183,19 +246,9 @@ class TopicModelHarness:
             for token in tokenList:
                 if token in freqCounts:
                     freqCounts[token] += 1
-                    if y[i] == 1:
-                        freqCountsWithClass[token] += 1
-                    else:
-                        freqCountsWithClass[token] += -1
                 else:
                     freqCounts[token] = 1
-                    if y[i] == 1:
-                        freqCountsWithClass[token] = 1
-                    else:
-                        freqCountsWithClass[token] = -1
-        for token in freqCountsWithClass:
-            freqsByClass[token] = float(freqCountsWithClass[token])/float(freqCounts[token])
-        return freqCounts, freqsByClass
+        return freqCounts
 
     def getAmbiguousTokens(self, freqsByClass):
         ambiguousTokens = set()
@@ -224,15 +277,11 @@ class TopicModelHarness:
                 rareWords.add(token)
         return rareWords
 
-    def vectorize(self, docs, stopWords, y):
+    def vectorize(self, docs, stopWords, fit=False):
         print "vectorizing..."
         #vectorizer = HashingVectorizer(stop_words='english', non_negative=True)
         #vectorizer = HashingVectorizer(stop_words=stopWords, non_negative=True, norm='l2')
-        if y is not None:
-            self.vectorizer =TfidfVectorizer(min_df=3,  max_features=None, strip_accents='unicode',
-                                    analyzer='word',token_pattern=r'\w{1,}',ngram_range=(1, 2), use_idf=1,smooth_idf=1,
-                                    sublinear_tf=1)
-            self.vectorizer.fit(docs)
+
 
         vectorizedDocs = self.vectorizer.transform(docs)
 
@@ -301,9 +350,9 @@ class TopicModelHarness:
         #params = {'C': linspace(.5, 1, 2), 'numFeatures': linspace(25000, 75000, 2)}
         #print params
         #params = {'C': logspace(-1,4,10), 'gamma':logspace(0,0,1)}
-        params = {'C': linspace(.8,1.3,5)}
+        params = {'C': linspace(.2,2,10)}
         clf = TopicModel()
-        self.model = GridSearchCV(clf, param_grid=params, scoring='roc_auc', cv=10, verbose=2, n_jobs=4)
+        self.model = GridSearchCV(clf, param_grid=params, scoring='roc_auc', cv=5, verbose=2, n_jobs=4)
         self.model.fit(X, y)
 
         try:
@@ -340,17 +389,42 @@ class TopicModelHarness:
             docs[i] = docs[i] + ' __' + str(alchemyCategory[i]) + ' '
         return docs
 
+    def trainVectorizer(self):
+        print "Training vectorizer..."
+        raw = self.getRaw('train.tsv')
+        rawTest = self.getRaw('test.tsv')
+        boilerplate = list(raw['boilerplate'])
+        boilerplate.extend(list(rawTest['boilerplate']))
+        docs = self.getDocs(boilerplate)
+        docs = self.preprocessDocs(docs)
+        #docs = self.expandVocab(docs)
+        print 'all docs length: %d' % len(docs)
+
+        self.vectorizer =TfidfVectorizer(min_df=3,  max_features=None, strip_accents='unicode',
+                        analyzer='word',token_pattern=r'\w{1,}',ngram_range=(1, 2), use_idf=1,smooth_idf=1,
+                        sublinear_tf=1)
+        self.vectorizer.fit(docs)
+        print "vectorizing..."
+        X = self.vectorizer.transform(docs)
+        print "finding principal components..."
+        self.tsvd = TruncatedSVD(n_components = 500)
+        self.tsvd.fit(X)
+
     def getXy(self, path):
         raw = self.getRaw(path)
         docs = self.getDocs(raw['boilerplate'])
+
         if 'label' in raw:
             y = raw['label']
-            self.vectorize(docs=docs, stopWords='english', y=y)
-        else:
-            y = None
 
         docs = self.preprocessDocs(docs)
-        X_text = self.vectorize(docs=docs, stopWords='english', y=None)
+        #docs = self.expandVocab(docs)
+        print "vectorizing..."
+        X_text = self.vectorizer.transform(docs)
+        X_text = self.tsvd.transform(X_text)
+
+        print 'X Sparse Array Size:'
+        print X_text.shape
         self.Pre = Preprocessor()
         X_meta, y, urlid = self.Pre.preprocess(raw)
         #X_meta = np.abs(X_meta)
@@ -360,6 +434,7 @@ class TopicModelHarness:
         return d
 
     def runModel(self, testSize, debug):
+        self.trainVectorizer()
         d = self.getXy('train.tsv')
         if debug:
             X_train, X_test, y_train, y_test = train_test_split(d['X'], d['y'], test_size=testSize, random_state=5)
@@ -373,13 +448,12 @@ class TopicModelHarness:
         self.fit(X_train, y_train)
         print "20 Fold CV Score: ", np.mean(cross_val_score(self.model, d['X'], d['y'], cv=10, scoring='roc_auc'))
         y_predicted = self.predict(X_test)
-        #y_predicted = self.binResults(y_predicted, 0.05)
 
         if debug:
             print 'Topic Model AUC Score: %f' % roc_auc_score(y_test, y_predicted)
         else:
             Pre = Preprocessor()
-            Pre.generateSubmission('submission_11.csv', urlid, y_predicted)
+            Pre.generateSubmission('submission_12.csv', urlid, y_predicted)
 
         P.figure()
         P.hist(y_predicted, bins=100)
