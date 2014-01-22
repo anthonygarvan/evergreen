@@ -1,9 +1,7 @@
-__author__ = 'root'
+__author__ = 'Anthony Garvan'
 
 from pandas.io.parsers import read_csv
-import random
 import json
-import cPickle as pickle
 from sklearn.feature_extraction.text import HashingVectorizer, ENGLISH_STOP_WORDS, TfidfVectorizer
 from sklearn.naive_bayes import BernoulliNB, MultinomialNB
 from sklearn.cross_validation import train_test_split
@@ -12,12 +10,10 @@ from sklearn.svm import SVR, SVC, LinearSVC
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingClassifier, AdaBoostRegressor
 import pylab as P
 import numpy as np
-import random
 from sklearn.linear_model import LogisticRegression, SGDRegressor
 from sklearn.ensemble import AdaBoostRegressor
 from time import time
 from sklearn.grid_search import GridSearchCV
-from SparseAdaBoost import SparseAdaBoost
 from scipy.sparse import csc_matrix, csr_matrix, lil_matrix
 from scipy.sparse import hstack
 from Preprocessor import Preprocessor
